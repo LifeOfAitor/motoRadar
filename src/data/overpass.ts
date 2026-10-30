@@ -1,15 +1,26 @@
-import type { LatLon } from '../core/geo';
+import { boundingBox, type LatLon } from '../core/geo';
 import type { Radar } from '../core/radar';
 
+// Public Overpass servers are often overloaded (502/504, or hanging); tried in
+// order with a short timeout so one stuck server doesn't block the download.
+// Measured 2026-10: mail.ru ~15 s for 100 km, overpass-api.de 0–31 s or 502.
 const ENDPOINTS = [
+  'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
   'https://overpass-api.de/api/interpreter',
   'https://overpass.kumi.systems/api/interpreter',
 ];
-const TIMEOUT_MS = 120_000;
+const TIMEOUT_MS = 45_000;
 
+/**
+ * Bounding box rather than `around:`: for a 100 km radius `around` regularly
+ * times out (HTTP 504) on the public servers, while a bbox query takes ~15–30 s.
+ * Radars in the box corners (beyond the radius) are harmless.
+ */
 export function buildQuery(center: LatLon, radius: number): string {
-  return `[out:json][timeout:90];
-node["highway"="speed_camera"](around:${Math.round(radius)},${center.latitude},${center.longitude});
+  const box = boundingBox(center, radius);
+  const bbox = [box.minLat, box.minLon, box.maxLat, box.maxLon].map((v) => v.toFixed(4)).join(',');
+  return `[out:json][timeout:40];
+node["highway"="speed_camera"](${bbox});
 out body;`;
 }
 
@@ -96,6 +107,7 @@ export async function fetchRadars(center: LatLon, radius: number): Promise<Radar
       if (!response.ok) throw new Error(`Overpass HTTP ${response.status}`);
       return parseResponse(await response.json());
     } catch (error) {
+      console.warn(`[overpass] ${endpoint} failed`, error);
       lastError = error;
     } finally {
       clearTimeout(timeout);

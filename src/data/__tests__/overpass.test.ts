@@ -62,9 +62,15 @@ describe('parseResponse', () => {
 });
 
 describe('buildQuery', () => {
-  it('queries speed cameras around the point', () => {
-    const query = buildQuery({ latitude: 40.5, longitude: -3.5 }, 100_000.4);
-    expect(query).toContain('node["highway"="speed_camera"](around:100000,40.5,-3.5)');
+  it('queries speed cameras in a bounding box around the point', () => {
+    const query = buildQuery({ latitude: 40.5, longitude: -3.5 }, 100_000);
+    const match = query.match(/node\["highway"="speed_camera"\]\(([-\d.,]+)\)/);
+    expect(match).not.toBeNull();
+    const [south, west, north, east] = match![1].split(',').map(Number);
+    expect(south).toBeCloseTo(40.5 - 0.9, 1);
+    expect(north).toBeCloseTo(40.5 + 0.9, 1);
+    expect(west).toBeLessThan(-4.6);
+    expect(east).toBeGreaterThan(-2.4);
     expect(query).toContain('[out:json]');
   });
 });

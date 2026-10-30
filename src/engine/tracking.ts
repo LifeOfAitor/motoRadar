@@ -55,8 +55,6 @@ async function doStartTracking() {
     background = await Location.requestBackgroundPermissionsAsync();
   }
 
-  await setupNotifications().catch(() => false);
-
   if (background.granted) {
     await stopForegroundWatcher();
     await Location.startLocationUpdatesAsync(LOCATION_TASK, {
@@ -79,6 +77,9 @@ async function doStartTracking() {
     );
     engineStore.set({ permission: 'foreground' });
   }
+
+  // After location is running: alerts must work even if this prompt is never answered.
+  await setupNotifications().catch(() => false);
 }
 
 async function stopAll() {

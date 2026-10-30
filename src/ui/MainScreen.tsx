@@ -56,6 +56,7 @@ export function MainScreen() {
       </View>
 
       <View style={styles.body}>
+        <NoRadarsWarning />
         <AlertCard />
         <RadarMap onSelectRadar={setSelectedRadar} />
       </View>
@@ -65,6 +66,24 @@ export function MainScreen() {
       <SettingsSheet visible={settingsVisible} onClose={() => setSettingsVisible(false)} />
       <RadarDetailSheet radar={selectedRadar} onClose={() => setSelectedRadar(null)} />
     </SafeAreaView>
+  );
+}
+
+/** Without radars the app would look like it is protecting you while it can't. */
+function NoRadarsWarning() {
+  const radarCount = engineStore.use((s) => s.radarCount);
+  const refreshing = engineStore.use((s) => s.refreshing);
+  const refreshError = engineStore.use((s) => s.refreshError);
+  if (radarCount > 0 || (!refreshing && !refreshError)) return null;
+  return (
+    <View style={[styles.warning, refreshing && styles.warningInfo]}>
+      <Ionicons name={refreshing ? 'cloud-download' : 'alert-circle'} size={20} color={refreshing ? colors.accent : colors.danger} />
+      <Text style={styles.warningText}>
+        {refreshing
+          ? 'Descargando radares de OpenStreetMap…'
+          : 'Sin radares descargados: los servidores no responden. Se reintentará en unos minutos, o pulsa ↻.'}
+      </Text>
+    </View>
   );
 }
 
@@ -125,6 +144,16 @@ const styles = StyleSheet.create({
   statusText: { fontSize: 13, color: colors.textSecondary, flexShrink: 1 },
   count: { fontSize: 13, color: colors.textSecondary },
   body: { flex: 1, paddingHorizontal: 16, gap: 12 },
+  warning: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    padding: 12,
+    borderRadius: 12,
+    backgroundColor: colors.alertBackground,
+  },
+  warningInfo: { backgroundColor: colors.card },
+  warningText: { flex: 1, fontSize: 14, color: colors.text },
   bottomBar: {
     flexDirection: 'row',
     alignItems: 'center',
