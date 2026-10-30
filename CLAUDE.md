@@ -54,13 +54,15 @@ expo-location background task (src/engine/tracking.ts)
 
 ## Key behaviour (keep these when changing code)
 
-- **Direction of travel comes from the GPS course**, not the compass (in a pocket the compass is meaningless). Below ~7 km/h, falls back to the bearing between fixes; forgotten after 15 s.
-- **Pass detection** (`src/core/tracker.ts`): passed when distance grows > 60 m past the closest approach, or the radar leaves the forward cone after we got within 150 m. Passed radars stay suppressed until we are > alert radius + 150 m away — this fixes the Swift bug where distances kept counting up after passing.
-- **Voice announces once** per radar (`isNew`), distance rounded (10 m steps < 100 m, 50 m steps above).
+- **Direction of travel comes from the GPS course**, not the compass (in a pocket the compass is meaningless). A heading of exactly 0 counts as unknown (Android's "no bearing"). Without a GPS course it falls back to the bearing between fixes (displacement ≥ 15 m and ≥ 2× accuracy). While stopped (speed ≈ 0) the last course is kept so red-light jitter can't invent a direction.
+- **Fixes with accuracy > 50 m** are shown but not used for alerts.
+- **Pass detection** (`src/core/tracker.ts`): passed when distance grows > 60 m past the closest approach (while continuously relevant), or when the radar ends up > 120° behind us after we got within 100 m. Further away, leaving the forward cone (bend, roundabout) only hides it and resets the closest-approach baseline. Passed radars stay suppressed until > alert radius + 150 m away, or until a U-turn (course reversed and 2 approaching fixes). This fixes the Swift bug where distances kept counting up after passing.
+- **Without a direction of travel** only the radar already being tracked keeps alerting; no new radar is started or announced.
+- **Voice announces once** per radar, distance rounded (10 m steps < 100 m, 50 m steps above). If detected while muted, it is announced on unmute if still approaching. The notification is re-posted when an alert resumes.
 - **Lane filter**: radar must be within ±90° ahead; if it has OSM `direction` tags, one must be within 60° of our course.
-- **Stale GPS**: no fix for 30 s → alerts stop (tunnels, waiting at lights).
-- **Vibration** (`src/core/vibration.ts`): interval 0.5 s (<50 m), 0.8 s (<150 m), 1.3 s (<300 m), 2 s (<500 m), 3 s beyond. Android pulse length 150–400 ms scales with the intensity slider; iOS system vibration is fixed (~400 ms, full strength).
-- **Offline-first**: radars cached in SQLite; refresh from Overpass (100 km radius) when > 7 days old or > 40 km from the last download point. Failed downloads retry at most every 5 min.
+- **Vibration** (`src/core/vibration.ts`, `src/alerts/vibrator.ts`): interval 0.5 s (<50 m), 0.8 s (<150 m), 1.3 s (<300 m), 2 s (<500 m), 3 s beyond. It only lives ~6 s past the last GPS fix, so it can't get stuck on. Android: a finite native burst re-planned on every fix with the same phase (RN JS timers don't run while an Android app is in the background, and Android may cancel vibrations at screen-off); pulse 150–400 ms scales with the intensity slider. iOS: our own JS loop of system vibrations (fixed ~400 ms, full strength, slider hidden).
+- **Stale GPS**: no fix for 30 s → alert cleared (JS timer: works on iOS/foreground; on Android background the vibration dies out by itself instead).
+- **Offline-first**: radars cached in SQLite; refresh from Overpass (100 km radius) when > 7 days old or > 40 km from the last download point. Failed downloads retry at most every 5 min. Overpass replies with a `remark` (timeout/OOM, HTTP 200) are errors, and an empty result never replaces a non-empty cache.
 - **Battery**: `Accuracy.High` (≈ nearest ten meters), `distanceInterval: 10`. Do not use `BestForNavigation`.
 - **Android** runs a location foreground service (persistent "RadarMoto activo" notification) — this is what keeps GPS + vibration alive with the screen off.
 

@@ -1,4 +1,4 @@
-import { vibrationBand, vibrationPattern } from '../vibration';
+import { burstToPattern, planBurst, vibrationBand, type Burst } from '../vibration';
 
 describe('vibrationBand', () => {
   it('vibrates more often the closer the radar', () => {
@@ -30,17 +30,56 @@ describe('vibrationBand', () => {
   });
 });
 
-describe('vibrationPattern', () => {
-  it('Android: [wait, vibrate, wait] summing to the interval', () => {
-    const band = vibrationBand(100, 1);
-    const pattern = vibrationPattern(band, 'android');
-    expect(pattern[0]).toBe(0);
-    expect(pattern[1]).toBe(band.pulseMs);
-    expect(pattern[1] + pattern[2]).toBe(band.intervalMs);
+/** Absolute times (ms) at which each pulse of `pattern` starts, sent at `now`. */
+function pulseTimes(pattern: number[], now: number): number[] {
+  const times: number[] = [];
+  let t = now;
+  pattern.forEach((ms, i) => {
+    if (i % 2 === 1) times.push(t);
+    t += ms;
+  });
+  return times;
+}
+
+describe('planBurst / burstToPattern', () => {
+  const band = vibrationBand(100, 1); // 800 ms interval
+
+  it('starts immediately and covers the requested duration', () => {
+    const burst = planBurst(null, band, 0, 6000)!;
+    const times = pulseTimes(burstToPattern(burst, 0), 0);
+    expect(times[0]).toBe(0);
+    expect(times[times.length - 1]).toBeGreaterThanOrEqual(6000 - band.intervalMs);
+    for (let i = 1; i < times.length; i++) expect(times[i] - times[i - 1]).toBe(band.intervalMs);
   });
 
-  it('iOS: immediate vibration then the interval as pause', () => {
-    const band = vibrationBand(100, 1);
-    expect(vibrationPattern(band, 'ios')).toEqual([0, band.intervalMs]);
+  it('keeps the rhythm when re-sent mid-burst (no early or doubled pulse)', () => {
+    const first = planBurst(null, band, 0, 6000)!;
+    const now = 1300; // after pulse #2 (800–1200), before #3 (1600)
+    const next = planBurst(first, band, now, 6000)!;
+    expect(next.firstPulseAt).toBe(1600);
+    expect(pulseTimes(burstToPattern(next, now), now)[0]).toBe(1600);
+  });
+
+  it('does not cut a pulse short', () => {
+    const first = planBurst(null, band, 0, 6000)!;
+    expect(planBurst(first, band, 850, 6000)).toBeNull(); // pulse started at 800
+  });
+
+  it('switches to a faster band from the last pulse', () => {
+    const first = planBurst(null, band, 0, 6000)!;
+    const close = vibrationBand(20, 1); // 500 ms
+    const next = planBurst(first, close, 1250, 6000)!;
+    expect(next.firstPulseAt).toBe(1300); // last pulse 800 + 500
+    expect(next.intervalMs).toBe(500);
+  });
+
+  it('restarts immediately after the previous burst ended', () => {
+    const first: Burst = { firstPulseAt: 0, intervalMs: 800, pulseMs: 400, pulses: 2 };
+    expect(planBurst(first, band, 10_000, 6000)!.firstPulseAt).toBe(10_000);
+  });
+
+  it('waits for a first pulse that is still pending', () => {
+    const pending: Burst = { firstPulseAt: 500, intervalMs: 800, pulseMs: 400, pulses: 5 };
+    expect(planBurst(pending, band, 200, 6000)!.firstPulseAt).toBe(500);
   });
 });

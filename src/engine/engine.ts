@@ -1,8 +1,8 @@
 import type { LocationObject } from 'expo-location';
 
 import { dismissRadarNotification, showRadarNotification } from '../alerts/notifications';
-import { stopVibration, vibrateForBand } from '../alerts/vibrator';
-import { speak } from '../alerts/voice';
+import { keepVibrating, stopVibration } from '../alerts/vibrator';
+import { speak, stopSpeaking } from '../alerts/voice';
 import { CourseTracker, type Fix } from '../core/course';
 import { announcementText, formatDistance } from '../core/format';
 import type { Radar } from '../core/radar';
@@ -42,17 +42,29 @@ export const engineStore = createStore<EngineState>({
   permission: 'undetermined',
 });
 
-/** With no GPS fix for this long (tunnel, stopped at a light), alerts stop. */
+/**
+ * With no GPS fix for this long (tunnel, stopped at a light), the alert is cleared.
+ * JS timers don't run in the background on Android; there the vibration dies
+ * out on its own (see vibrator.ts) and the alert clears on the next fix.
+ */
 const STALE_FIX_MS = 30_000;
+/** Fixes less accurate than this (first fixes, tunnel exits, cell/Wi-Fi fallback) are not used for alerts. */
+const MAX_ACCURACY_M = 50;
 /** Don't retry a failed download more often than this. */
 const REFRESH_RETRY_MS = 5 * 60_000;
+/** When Overpass returns no radars at all, keep the old cache and wait this long before asking again. */
+const EMPTY_RESULT_RETRY_MS = 60 * 60_000;
 
 const tracker = new RadarTracker();
 const course = new CourseTracker();
 let processing = false;
 let pendingFix: Fix | null = null;
 let staleTimer: ReturnType<typeof setTimeout> | null = null;
-let lastRefreshAttempt = 0;
+let nextRefreshAllowedAt = 0;
+/** Radar detected while muted / voice off: announce it if unmuted while still approaching. */
+let unannouncedRadarId: string | null = null;
+/** Radar whose notification is currently posted. */
+let notifiedRadarId: string | null = null;
 
 export async function loadCacheInfo() {
   engineStore.set({ radarCount: await radarCount() });
@@ -67,6 +79,7 @@ export function handleLocations(locations: LocationObject[]) {
     longitude: latest.coords.longitude,
     heading: latest.coords.heading,
     speed: latest.coords.speed,
+    accuracy: latest.coords.accuracy,
     timestamp: latest.timestamp,
   };
   void drain();
@@ -80,16 +93,23 @@ async function drain() {
     while (pendingFix) {
       const fix = pendingFix;
       pendingFix = null;
-      await processFix(fix);
+      try {
+        await processFix(fix);
+      } catch (error) {
+        console.warn('[engine] processFix failed', error);
+        clearAlert(); // never leave vibration running on an error
+      }
     }
-  } catch (error) {
-    console.warn('[engine] processFix failed', error);
   } finally {
     processing = false;
   }
 }
 
 async function processFix(fix: Fix) {
+  if (fix.accuracy !== null && fix.accuracy > MAX_ACCURACY_M) {
+    engineStore.set({ fix }); // still show speed/position, but don't alert on it
+    return;
+  }
   const heading = course.update(fix);
   engineStore.set({ fix, course: heading });
   armStaleTimer();
@@ -110,25 +130,32 @@ async function processFix(fix: Fix) {
   applyAlerts(result, settings);
 }
 
-function applyAlerts(result: Extract<TrackerResult, { kind: 'alert' }>, settings: Settings) {
+function applyAlerts({ radar, distance, isNew }: Extract<TrackerResult, { kind: 'alert' }>, settings: Settings) {
+  if (isNew) unannouncedRadarId = radar.id;
   if (settings.muted) return;
 
   if (settings.vibrationEnabled) {
-    vibrateForBand(vibrationBand(result.distance, settings.vibrationIntensity));
+    keepVibrating(vibrationBand(distance, settings.vibrationIntensity));
   }
-  if (result.isNew) {
-    if (settings.voiceEnabled) speak(announcementText(result.distance, result.radar.speedLimit));
-    const limit = result.radar.speedLimit ? ` · Límite ${result.radar.speedLimit} km/h` : '';
-    void showRadarNotification('Radar próximo', `${formatDistance(result.distance)}${limit}`);
+  if (unannouncedRadarId === radar.id && settings.voiceEnabled) {
+    speak(announcementText(distance, radar.speedLimit));
+    unannouncedRadarId = null;
+  }
+  // Re-posted if the alert resumes after a bend, a stop or unmuting.
+  if (notifiedRadarId !== radar.id) {
+    const limit = radar.speedLimit ? ` · Límite ${radar.speedLimit} km/h` : '';
+    void showRadarNotification('Radar próximo', `${formatDistance(distance)}${limit}`);
+    notifiedRadarId = radar.id;
   }
 }
 
 function clearAlert() {
   stopVibration();
-  if (engineStore.get().alert) {
-    engineStore.set({ alert: null });
+  if (notifiedRadarId) {
+    notifiedRadarId = null;
     void dismissRadarNotification();
   }
+  if (engineStore.get().alert) engineStore.set({ alert: null });
 }
 
 function armStaleTimer() {
@@ -143,12 +170,18 @@ function armStaleTimer() {
 settingsStore.subscribe(() => {
   const { muted, vibrationEnabled } = settingsStore.get();
   if (muted || !vibrationEnabled) stopVibration();
-  if (muted) void dismissRadarNotification();
+  if (muted) {
+    stopSpeaking();
+    if (notifiedRadarId) {
+      notifiedRadarId = null;
+      void dismissRadarNotification();
+    }
+  }
 });
 
 function maybeRefresh(fix: Fix) {
   const now = Date.now();
-  if (engineStore.get().refreshing || now - lastRefreshAttempt < REFRESH_RETRY_MS) return;
+  if (engineStore.get().refreshing || now < nextRefreshAllowedAt) return;
   if (!needsRefresh(getFetchMeta(), fix, now)) return;
   void refreshRadars(fix);
 }
@@ -156,10 +189,16 @@ function maybeRefresh(fix: Fix) {
 /** Downloads radars around `center` from OpenStreetMap and replaces the cache. */
 export async function refreshRadars(center: { latitude: number; longitude: number }) {
   if (engineStore.get().refreshing) return;
-  lastRefreshAttempt = Date.now();
+  nextRefreshAllowedAt = Date.now() + REFRESH_RETRY_MS;
   engineStore.set({ refreshing: true, refreshError: null });
   try {
     const radars = await fetchRadars(center, DOWNLOAD_RADIUS_M);
+    if (radars.length === 0 && engineStore.get().radarCount > 0) {
+      // Never wipe a good cache with an empty answer.
+      nextRefreshAllowedAt = Date.now() + EMPTY_RESULT_RETRY_MS;
+      engineStore.set({ refreshError: 'OpenStreetMap no devolvió radares. Se usan los guardados.' });
+      return;
+    }
     await replaceAllRadars(radars);
     const fetchedAt = Date.now();
     setFetchMeta({ latitude: center.latitude, longitude: center.longitude, fetchedAt });

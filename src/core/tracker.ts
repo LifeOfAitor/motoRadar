@@ -1,16 +1,20 @@
-import { distanceMeters, type LatLon } from './geo';
+import { angularDiff, bearingDegrees, distanceMeters, type LatLon } from './geo';
 import { isRelevant, type Radar } from './radar';
 
 /** Radar counts as passed once we are this much farther than our closest approach. */
 export const PASS_MARGIN_M = 60;
+/** A radar this far off our course (degrees) is behind us. */
+export const BEHIND_ANGLE_DEG = 120;
 /**
- * If a tracked radar drops out of the forward cone after we got this close, it is
- * behind us → passed. Farther away it may just be a bend in the road, so it is
- * hidden but not suppressed.
+ * A tracked radar that ends up behind us counts as passed only if we got this
+ * close. Farther away it may be a bend, roundabout or junction: it is hidden,
+ * not suppressed, and alerts again when it is back ahead.
  */
-export const CLOSE_APPROACH_M = 150;
+export const PASSED_BEHIND_MAX_M = 100;
 /** A passed/announced radar is forgotten once it is this far beyond the alert radius. */
 export const REARM_MARGIN_M = 150;
+/** After a U-turn, consecutive approaching fixes needed before a passed radar alerts again. */
+const UTURN_APPROACH_FIXES = 2;
 
 export interface TrackerOptions {
   alertRadius: number;
@@ -30,13 +34,24 @@ export type TrackerResult =
 interface Memory {
   radar: Radar;
   passed: boolean;
+  /** Course when it was passed, to recognise a U-turn. */
+  passedCourse: number | null;
+  lastDistance: number;
+  approachFixes: number;
+}
+
+interface Measured {
+  radar: Radar;
+  distance: number;
 }
 
 /**
  * Picks the radar to alert for and decides when it has been passed.
  *
- * Passed radars stay suppressed until we are well away from them, so a radar
- * behind us never comes back with growing distances.
+ * - Passed radars stay suppressed until we are well away (or U-turn back
+ *   towards them), so a radar behind us never comes back with growing distances.
+ * - Without a direction of travel (stopped, no GPS course) only the radar
+ *   already being tracked keeps alerting; no new radar is started or announced.
  */
 export class RadarTracker {
   private trackedId: string | null = null;
@@ -52,24 +67,36 @@ export class RadarTracker {
   ): TrackerResult {
     this.forgetDistant(position, alertRadius);
 
-    const inRange = candidates
+    const measured = candidates
       .map((radar) => ({ radar, distance: distanceMeters(position, radar) }))
-      .filter(({ radar, distance }) => distance <= alertRadius && !this.memory.get(radar.id)?.passed);
+      .filter(({ distance }) => distance <= alertRadius);
 
+    this.rearmAfterUTurn(measured, position, heading, laneFilter);
+
+    const inRange = measured.filter(({ radar }) => !this.memory.get(radar.id)?.passed);
     const relevant =
       heading === null
-        ? inRange
+        ? inRange.filter(({ radar }) => radar.id === this.trackedId)
         : inRange.filter(({ radar }) => isRelevant(radar, position, heading, laneFilter));
 
-    // Tracked radar dropped out of the relevant set (but is still in range).
+    // Tracked radar is no longer relevant: passed if it is behind us and we got close, else just hidden.
     if (this.trackedId && !relevant.some(({ radar }) => radar.id === this.trackedId)) {
-      const stillInRange = inRange.some(({ radar }) => radar.id === this.trackedId);
-      if (stillInRange && this.minDistance <= CLOSE_APPROACH_M) this.markPassed(this.trackedId);
-      if (!stillInRange || this.minDistance <= CLOSE_APPROACH_M) this.untrack();
+      const tracked = inRange.find(({ radar }) => radar.id === this.trackedId);
+      if (
+        tracked &&
+        heading !== null &&
+        angularDiff(bearingDegrees(position, tracked.radar), heading) > BEHIND_ANGLE_DEG &&
+        this.minDistance <= PASSED_BEHIND_MAX_M &&
+        tracked.distance > this.minDistance
+      ) {
+        this.markPassed(tracked, heading);
+      }
+      this.untrack();
     }
 
     const sorted = relevant.sort((a, b) => a.distance - b.distance);
-    for (const { radar, distance } of sorted) {
+    for (const entry of sorted) {
+      const { radar, distance } = entry;
       if (radar.id !== this.trackedId) {
         this.trackedId = radar.id;
         this.minDistance = distance;
@@ -78,13 +105,15 @@ export class RadarTracker {
       }
 
       if (distance > this.minDistance + PASS_MARGIN_M) {
-        this.markPassed(radar.id);
+        this.markPassed(entry, heading);
         this.untrack();
         continue; // try the next-nearest radar
       }
 
       const isNew = !this.memory.has(radar.id);
-      if (isNew) this.memory.set(radar.id, { radar, passed: false });
+      if (isNew) {
+        this.memory.set(radar.id, { radar, passed: false, passedCourse: null, lastDistance: distance, approachFixes: 0 });
+      }
       return { kind: 'alert', radar, distance, isNew };
     }
 
@@ -96,14 +125,34 @@ export class RadarTracker {
     this.memory.clear();
   }
 
-  private markPassed(id: string) {
-    const entry = this.memory.get(id);
-    if (entry) entry.passed = true;
+  private markPassed({ radar, distance }: Measured, heading: number | null) {
+    const entry = this.memory.get(radar.id);
+    if (!entry) return;
+    entry.passed = true;
+    entry.passedCourse = heading;
+    entry.lastDistance = distance;
+    entry.approachFixes = 0;
   }
 
   private untrack() {
     this.trackedId = null;
     this.minDistance = Infinity;
+  }
+
+  /** A passed radar becomes new again if we turned around and are clearly approaching it. */
+  private rearmAfterUTurn(measured: Measured[], position: LatLon, heading: number | null, laneFilter: boolean) {
+    if (heading === null) return;
+    for (const { radar, distance } of measured) {
+      const entry = this.memory.get(radar.id);
+      if (!entry?.passed || entry.passedCourse === null) continue;
+      const reversed = angularDiff(heading, entry.passedCourse) > BEHIND_ANGLE_DEG;
+      const approaching = distance < entry.lastDistance - 5;
+      entry.approachFixes = reversed && approaching && isRelevant(radar, position, heading, laneFilter)
+        ? entry.approachFixes + 1
+        : 0;
+      entry.lastDistance = distance;
+      if (entry.approachFixes >= UTURN_APPROACH_FIXES) this.memory.delete(radar.id);
+    }
   }
 
   private forgetDistant(position: LatLon, alertRadius: number) {

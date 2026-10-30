@@ -30,6 +30,7 @@ export async function setupNotifications(): Promise<boolean> {
   return granted;
 }
 
+/** Never throws: a missing notification permission must not break the alert pipeline. */
 export async function showRadarNotification(title: string, body: string) {
   await Notifications.scheduleNotificationAsync({
     identifier: RADAR_NOTIFICATION_ID,
@@ -41,9 +42,9 @@ export async function showRadarNotification(title: string, body: string) {
       priority: Notifications.AndroidNotificationPriority.HIGH,
     },
     trigger: Platform.OS === 'android' ? { channelId: CHANNEL_ID } : null,
-  });
+  }).catch((error) => console.warn('[notifications] show failed', error));
 }
 
 export async function dismissRadarNotification() {
-  await Notifications.dismissNotificationAsync(RADAR_NOTIFICATION_ID);
+  await Notifications.dismissNotificationAsync(RADAR_NOTIFICATION_ID).catch(() => {});
 }

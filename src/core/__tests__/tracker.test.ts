@@ -1,5 +1,5 @@
 import { offset, MADRID, radarAt } from '../../test/helpers';
-import type { LatLon } from '../geo';
+import { bearingDegrees, type LatLon } from '../geo';
 import type { Radar } from '../radar';
 import { RadarTracker, type TrackerOptions, type TrackerResult } from '../tracker';
 
@@ -48,14 +48,28 @@ describe('RadarTracker', () => {
     expect(results[results.length - 1].kind).toBe('none');
   });
 
-  it('stops after passing even with no direction of travel (pocket / no GPS course)', () => {
-    const results = run(new RadarTracker(), straightRide(MADRID, 0, 700, 400, 20, null), [radar]);
-    const hits = alerts(results);
-    expect(hits.filter((h) => h.isNew)).toHaveLength(1);
+  it('keeps alerting the tracked radar if the course is lost, and still stops after passing', () => {
+    const tracker = new RadarTracker();
+    run(tracker, straightRide(MADRID, 0, 600, -100), [radar]); // course known up to 100 m before
+    const results = run(tracker, straightRide(MADRID, 0, 100, 400, 20, null), [radar]);
     const lastAlert = alertIndexes(results).pop()!;
-    // pass is detected within PASS_MARGIN (60 m) + one step past the radar
-    expect(lastAlert).toBeLessThanOrEqual(700 / 20 + 4);
+    expect(alerts(results).every((r) => !r.isNew)).toBe(true);
+    expect(lastAlert).toBeGreaterThanOrEqual(100 / 20); // alerted all the way to the radar
+    expect(lastAlert).toBeLessThanOrEqual(100 / 20 + 4); // and stopped right after passing
     expect(results.slice(lastAlert + 1).every((r) => r.kind === 'none')).toBe(true);
+  });
+
+  it('does not start alerting a new radar without a direction of travel', () => {
+    const results = run(new RadarTracker(), straightRide(MADRID, 0, 400, 0, 20, null), [radar]);
+    expect(alerts(results)).toHaveLength(0);
+  });
+
+  it('does not alert an opposite-lane camera behind us when the course is lost', () => {
+    const opposite = radarAt(MADRID, 'opp', { directions: [180] });
+    const tracker = new RadarTracker();
+    run(tracker, straightRide(MADRID, 0, 400, 40), [opposite]); // filtered: never tracked
+    const stopped = run(tracker, [{ position: offset(MADRID, 48, 0), heading: null }], [opposite]);
+    expect(alerts(stopped)).toHaveLength(0);
   });
 
   it('never re-alerts a passed radar even if the heading then points back at it', () => {
@@ -109,6 +123,45 @@ describe('RadarTracker', () => {
     // Back on course: alert resumes without a second announcement
     const resumed = tracker.step(offset(MADRID, 380, 180), 0, [radar], OPTIONS);
     expect(resumed).toMatchObject({ kind: 'alert', isNew: false });
+  });
+
+  it('still alerts after the road swings away and back (distance grew while hidden)', () => {
+    const tracker = new RadarTracker();
+    run(tracker, straightRide(MADRID, 0, 450, -300), [radar]); // up to 300 m before
+    // Road swings east for 200 m: distance grows to ~360 m, radar out of the cone
+    const start = offset(MADRID, 300, 180);
+    const swing: Step[] = Array.from({ length: 10 }, (_, i) => ({ position: offset(start, (i + 1) * 20, 90), heading: 90 }));
+    run(tracker, swing, [radar]);
+    // ...then heads straight for the radar
+    const turnPoint = swing[swing.length - 1].position;
+    const toRadar = bearingDegrees(turnPoint, radar);
+    const back: Step[] = Array.from({ length: 17 }, (_, i) => ({ position: offset(turnPoint, (i + 1) * 20, toRadar), heading: toRadar }));
+    const results = run(tracker, back, [radar]);
+    const hits = alerts(results);
+    expect(hits.length).toBeGreaterThan(10);
+    expect(Math.min(...hits.map((h) => h.distance))).toBeLessThan(30);
+    expect(hits.some((h) => h.isNew)).toBe(false);
+  });
+
+  it('a roundabout 130 m before the camera hides it but does not mark it passed', () => {
+    const tracker = new RadarTracker();
+    run(tracker, straightRide(MADRID, 0, 450, -130), [radar]);
+    const entry = offset(MADRID, 130, 180);
+    // Going round: course swings east, south (radar behind us!) and west
+    for (const heading of [100, 160, 200, 250, 300]) tracker.step(offset(entry, 15, heading), heading, [radar], OPTIONS);
+    // Exit north towards the camera
+    const results = run(tracker, straightRide(MADRID, 0, 120, 0), [radar]);
+    expect(alerts(results).length).toBe(results.length);
+    expect(alerts(results).some((h) => h.isNew)).toBe(false);
+  });
+
+  it('alerts again after a U-turn back towards a passed radar', () => {
+    const tracker = new RadarTracker();
+    run(tracker, straightRide(MADRID, 0, 600, 200), [radar]); // pass it, ride on 200 m
+    const back = run(tracker, straightRide(MADRID, 180, 200, 0), [radar]); // U-turn, head back south
+    const hits = alerts(back);
+    expect(hits.filter((h) => h.isNew)).toHaveLength(1);
+    expect(Math.min(...hits.map((h) => h.distance))).toBeLessThan(30);
   });
 
   it('alerts again on the way back once we have been far away', () => {

@@ -46,18 +46,22 @@ export function SettingsSheet({ visible, onClose }: Props) {
             />
             {settings.vibrationEnabled && (
               <>
-                <View style={styles.row}>
-                  <Text style={styles.label}>Potencia</Text>
-                  <Text style={styles.value}>{Math.round(settings.vibrationIntensity * 100)}%</Text>
-                </View>
-                <Slider
-                  minimumValue={MIN_INTENSITY}
-                  maximumValue={MAX_INTENSITY}
-                  step={0.05}
-                  value={settings.vibrationIntensity}
-                  onSlidingComplete={(v) => updateSettings({ vibrationIntensity: v })}
-                  minimumTrackTintColor={colors.danger}
-                />
+                {Platform.OS === 'android' && (
+                  <>
+                    <View style={styles.row}>
+                      <Text style={styles.label}>Potencia</Text>
+                      <Text style={styles.value}>{Math.round(settings.vibrationIntensity * 100)}%</Text>
+                    </View>
+                    <Slider
+                      minimumValue={MIN_INTENSITY}
+                      maximumValue={MAX_INTENSITY}
+                      step={0.05}
+                      value={settings.vibrationIntensity}
+                      onSlidingComplete={(v) => updateSettings({ vibrationIntensity: v })}
+                      minimumTrackTintColor={colors.danger}
+                    />
+                  </>
+                )}
                 <Pressable
                   style={styles.button}
                   onPress={() => testVibration(vibrationBand(100, settingsStore.get().vibrationIntensity))}
@@ -68,7 +72,7 @@ export function SettingsSheet({ visible, onClose }: Props) {
             )}
             <Footer>
               {Platform.OS === 'ios'
-                ? 'En iPhone la vibración siempre tiene la máxima potencia del sistema; cambia la frecuencia según la distancia.'
+                ? 'En iPhone la vibración siempre usa la máxima potencia del sistema (no se puede regular); cuanto más cerca del radar, más frecuente.'
                 : 'Más cerca del radar = vibración más frecuente. Por debajo de 50 m es casi continua.'}
             </Footer>
           </Section>

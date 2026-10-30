@@ -23,6 +23,9 @@ describe('parseDirections', () => {
     ['NE', [45]],
     ['ssw', [202.5]],
     ['90;270', [90, 270]],
+    ['90;', [90]],
+    ['0-90', [45]],
+    ['315-45', [0]],
     ['forward', []],
     ['90;backward', []],
     [undefined, []],
@@ -46,8 +49,14 @@ describe('parseResponse', () => {
     ]);
   });
 
+  it('rejects responses Overpass flagged as failed (HTTP 200 + remark)', () => {
+    expect(() =>
+      parseResponse({ remark: 'runtime error: Query timed out', elements: [{ type: 'node', id: 1, lat: 1, lon: 1 }] }),
+    ).toThrow(/timed out/);
+  });
+
   it('rejects malformed responses', () => {
-    expect(() => parseResponse({ remark: 'runtime error' })).toThrow();
+    expect(() => parseResponse({})).toThrow();
     expect(() => parseResponse(null)).toThrow();
   });
 });

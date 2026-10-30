@@ -28,7 +28,10 @@ function db(): Promise<SQLite.SQLiteDatabase> {
       CREATE INDEX IF NOT EXISTS radars_lat_lon ON radars (lat, lon);
     `);
     return database;
-  })();
+  })().catch((error) => {
+    dbPromise = null; // let the next call retry instead of caching the failure
+    throw error;
+  });
   return dbPromise;
 }
 
