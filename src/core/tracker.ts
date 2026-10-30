@@ -77,7 +77,10 @@ export class RadarTracker {
     const relevant =
       heading === null
         ? inRange.filter(({ radar }) => radar.id === this.trackedId)
-        : inRange.filter(({ radar }) => isRelevant(radar, position, heading, laneFilter));
+        : inRange.filter(({ radar }) =>
+            // corridor to start a new radar; the wider cone to keep the tracked one
+            isRelevant(radar, position, heading, laneFilter, radar.id !== this.trackedId),
+          );
 
     // Tracked radar is no longer relevant: passed if it is behind us and we got close, else just hidden.
     if (this.trackedId && !relevant.some(({ radar }) => radar.id === this.trackedId)) {

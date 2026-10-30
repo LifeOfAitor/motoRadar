@@ -170,4 +170,32 @@ describe('RadarTracker', () => {
     const back = run(tracker, straightRide(MADRID, 180, 800, 200), [radar]); // return southbound
     expect(alerts(back).filter((r) => r.isNew)).toHaveLength(1);
   });
+
+  it('Madrid ride: alerts only the radar on our street, not the ones on parallel streets', () => {
+    // Real OSM cameras around node 992000663 (offsets measured from it)
+    const radars = [
+      radar,
+      radarAt(offset(offset(MADRID, 51, 0), 65, 90), '992003910'),
+      radarAt(offset(offset(MADRID, 213, 0), 178, 270), '992004622'),
+      radarAt(offset(offset(MADRID, 106, 0), 237, 270), '4258215850'),
+    ];
+    const results = run(new RadarTracker(), straightRide(MADRID, 0, 700, 300, 15), radars);
+    const ids = new Set(alerts(results).map((r) => r.radar.id));
+    expect([...ids]).toEqual(['r1']);
+  });
+
+  it('picks up a radar on a tight bend once it is closer', () => {
+    // Road curving right with R = 300 m; radar 300 m along the road
+    const R = 300;
+    const along = (s: number) => {
+      const a = s / R;
+      return { position: offset(offset(MADRID, R * Math.sin(a), 0), R * (1 - Math.cos(a)), 90), heading: (a * 180) / Math.PI };
+    };
+    const camera = radarAt(along(300).position, 'bend');
+    const steps = Array.from({ length: 20 }, (_, i) => along(i * 15));
+    const hits = alerts(run(new RadarTracker(), steps, [camera]));
+    expect(hits.length).toBeGreaterThan(0);
+    expect(hits[0].distance).toBeLessThan(250);
+    expect(Math.min(...hits.map((h) => h.distance))).toBeLessThan(30);
+  });
 });
