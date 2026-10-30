@@ -1,0 +1,62 @@
+{
+  "expo": {
+    "name": "RadarMoto",
+    "slug": "radarmoto",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "bundleIdentifier": "com.aitorgaillard.radarmoto",
+      "supportsTablet": false,
+      "infoPlist": {
+        "UIBackgroundModes": [
+          "location"
+        ],
+        "ITSAppUsesNonExemptEncryption": false
+      }
+    },
+    "android": {
+      "package": "com.aitorgaillard.radarmoto",
+      "adaptiveIcon": {
+        "backgroundColor": "#0E1226",
+        "foregroundImage": "./assets/android-icon-foreground.png"
+      },
+      "permissions": [
+        "VIBRATE"
+      ],
+      "predictiveBackGestureEnabled": false,
+      "blockedPermissions": [
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE"
+      ]
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "RadarMoto necesita tu ubicación en segundo plano para avisarte de los radares con el móvil bloqueado mientras conduces.",
+          "locationWhenInUsePermission": "RadarMoto usa tu ubicación para detectar radares cercanos.",
+          "isIosBackgroundLocationEnabled": true,
+          "isAndroidBackgroundLocationEnabled": true,
+          "isAndroidForegroundServiceEnabled": true
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "color": "#E53935",
+          "enableRemoteNotifications": false
+        }
+      ],
+      "expo-sqlite",
+      "expo-task-manager",
+      "expo-build-properties",
+      "@maplibre/maplibre-react-native",
+      "expo-font"
+    ]
+  }
+}
